@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Provider } from "@/components/ui/provider";
 import { Button } from "./components/ui/button";
 import {
   Center,
   Container,
+  Fieldset,
   Heading,
   HStack,
   Input,
@@ -23,9 +24,17 @@ import {
   DialogTitle,
 } from "./components/ui/dialog";
 import { format } from "date-fns";
-import { collection, doc, getDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  updateDoc,
+  type Timestamp,
+} from "firebase/firestore/lite";
 import { db } from "./services/firebase";
 import { Field } from "./components/ui/field";
+import { InputGroup } from "./components/ui/input-group";
 
 type Attendee = {
   id: string;
@@ -36,9 +45,9 @@ type Attendee = {
 type Event = {
   id: string;
   name: string;
-  startsAt: Date;
-  endsAt: Date;
-  rsvpBy: Date;
+  startsAt: Timestamp;
+  endsAt: Timestamp;
+  rsvpBy: Timestamp;
   address: string;
   descriptionHTML: string;
 };
@@ -60,35 +69,61 @@ async function getAttendeeFromCode(code: string): Promise<Attendee> {
   }
 
   return {
-    id: attendee.id,
+    id: attendeeDoc.id,
     name: attendee.name,
     phoneNumber: attendee.phoneNumber,
   };
 }
 
-const dummyEvents: Event[] = [
-  {
-    id: "1",
-    name: "Sarah and Frank's 25th Birthday Party",
-    startsAt: new Date("2025-01-10T18:00:00"),
-    endsAt: new Date("2025-01-010T22:00:00"),
-    rsvpBy: new Date("2025-01-07T23:59:59"),
-    address: "123 Main St, Springfield, IL",
-    descriptionHTML: `<p>
-      Come celebrate Sarah and Frank's 25th birthday! We'll have food, drinks,
-      and games. We can't wait to see you. 🎉
-    </p>`,
-  },
-  {
-    id: "2",
-    name: "Civ Day 3: Nick's Revenge",
-    startsAt: new Date("2022-01-15T18:00:00"),
-    endsAt: new Date("2022-01-15T22:00:00"),
-    rsvpBy: new Date("2022-01-14T23:59:59"),
-    address: "456 Elm St, Springfield, IL",
-    descriptionHTML: "<p>Come party with Frank!</p>",
-  },
-];
+async function getAttendeesForEvent(eventId: string) {
+  const query = await getDocs(collection(db, "events", eventId, "attendees"));
+  return query.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Attendee));
+}
+
+function EventCard({ event }: { event: Event }) {
+  const [attendees, setAttendees] = useState<Attendee[]>([]);
+
+  useEffect(() => {
+    // Fetch attendee count for event on firestore sub collection
+    getAttendeesForEvent(event.id)
+      .then((attendees) => {
+        console.log(attendees);
+
+        setAttendees(attendees);
+      })
+      .catch((error) => {
+        console.error(error);
+      });
+  }, [event]);
+
+  return (
+    <LinkBox
+      key={event.id}
+      as="article"
+      maxW="sm"
+      p="5"
+      borderWidth="1px"
+      rounded="md"
+    >
+      <Span asChild color="fg.muted" textStyle="sm">
+        <time dateTime="2021-01-15 15:30:00 +0000 UTC">
+          {format(event.startsAt.toDate(), "EEEE, MMM do 'at' h:mma")}
+        </time>
+      </Span>
+      <Heading size="lg" my="2">
+        <LinkOverlay href="#">{event.name}</LinkOverlay>
+      </Heading>
+      <Text
+        mb="3"
+        color="fg.muted"
+        dangerouslySetInnerHTML={{ __html: event.descriptionHTML }}
+      ></Text>
+      <Link href="#inner-link" variant="underline" colorPalette="teal">
+        RSVP{attendees.length > 0 && `with ${attendees.length} others`}
+      </Link>
+    </LinkBox>
+  );
+}
 
 function UnknownAttendeeView() {
   return (
@@ -110,50 +145,124 @@ function UnknownAttendeeView() {
 }
 
 function AttendeeView({ attendee }: { attendee: Attendee }) {
+  const [events, setEvents] = useState<Event[]>([]);
+  const handlePersonalInfoChangeTimeoutRef = useRef<number | null>(null);
+
+  const [personalInfoState, setPersonalInfoState] = useState<
+    "saved" | "waiting"
+  >("saved");
+  const [name, setName] = useState(attendee.name);
+  const [phoneNumber, setPhoneNumber] = useState(attendee.phoneNumber);
+
+  useEffect(() => {
+    // Fetch events from firestore
+    const eventsCollection = collection(db, "events");
+    getDocs(eventsCollection).then((querySnapshot) => {
+      const events = querySnapshot.docs.map(
+        (doc) =>
+          ({
+            id: doc.id,
+            ...doc.data(),
+          } as Event)
+      );
+      setEvents(events);
+    });
+  }, []);
+
+  const handlePersonalInfoChange = useCallback(async () => {
+    // Update attendee name and phone number in firestore
+    await updateDoc(doc(collection(db, "attendees"), attendee.id), {
+      name,
+      phoneNumber,
+    });
+    console.log("Saved");
+    setPersonalInfoState("saved");
+  }, [attendee, name, phoneNumber]);
+
+  useEffect(() => {
+    if (name === attendee.name && phoneNumber === attendee.phoneNumber) {
+      setPersonalInfoState("saved");
+      return;
+    }
+    setPersonalInfoState("waiting");
+    // Update attendee name and phone number in firestore
+    if (handlePersonalInfoChangeTimeoutRef.current) {
+      clearTimeout(handlePersonalInfoChangeTimeoutRef.current);
+    }
+
+    handlePersonalInfoChangeTimeoutRef.current = setTimeout(
+      handlePersonalInfoChange,
+      1500
+    );
+
+    return () => {
+      if (handlePersonalInfoChangeTimeoutRef.current) {
+        clearTimeout(handlePersonalInfoChangeTimeoutRef.current);
+      }
+    };
+  }, [
+    attendee.name,
+    attendee.phoneNumber,
+    handlePersonalInfoChange,
+    name,
+    phoneNumber,
+  ]);
+
+  function handleClearAttendee() {
+    localStorage.removeItem("code");
+    window.history.pushState({}, document.title, window.location.pathname);
+    window.location.reload();
+  }
+
   return (
     <Container maxWidth="breakpoint-md">
       <Heading size="6xl">Sarah and Frank's Parties</Heading>
-      <Button variant="subtle">I'm not {attendee.name}</Button>
 
-      <HStack>
-        <Field label="Name" helperText="In case we got it wrong">
-          <Input defaultValue={attendee.name} />
+      <HStack padding="4" backgroundColor="bg.panel" borderRadius="lg">
+        <Field label="Name" helperText="In case we got it wrong" flex="1">
+          <InputGroup
+            flex="1"
+            endElement={
+              personalInfoState === "waiting" ? <Spinner size="sm" /> : null
+            }
+          >
+            <Input
+              autoComplete="name"
+              defaultValue={attendee.name}
+              onChange={(ev) => setName(ev.currentTarget.value.trim())}
+            />
+          </InputGroup>
         </Field>
-        <Field label="Phone Number" helperText="So we can send you spam texts">
-          <Input defaultValue={attendee.phoneNumber} />
+        <Field
+          label="Phone Number"
+          helperText="So we can send you spam texts"
+          flex="1"
+        >
+          <InputGroup
+            flex="1"
+            endElement={
+              personalInfoState === "waiting" ? <Spinner size="sm" /> : null
+            }
+          >
+            <Input
+              autoComplete="tel"
+              type="tel"
+              defaultValue={attendee.phoneNumber}
+              onChange={(ev) => setPhoneNumber(ev.currentTarget.value.trim())}
+            />
+          </InputGroup>
         </Field>
+        <Button variant="subtle" onClick={handleClearAttendee}>
+          I'm not {attendee.name}
+        </Button>
       </HStack>
 
       <section>
         <Heading size="xl">Upcoming Events</Heading>
 
         <Stack>
-          {dummyEvents.map((event) => (
-            <LinkBox
-              key={event.id}
-              as="article"
-              maxW="sm"
-              p="5"
-              borderWidth="1px"
-              rounded="md"
-            >
-              <Span asChild color="fg.muted" textStyle="sm">
-                <time dateTime="2021-01-15 15:30:00 +0000 UTC">
-                  {format(event.startsAt, "EEEE, MMM do 'at' h:mma")}
-                </time>
-              </Span>
-              <Heading size="lg" my="2">
-                <LinkOverlay href="#">{event.name}</LinkOverlay>
-              </Heading>
-              <Text
-                mb="3"
-                color="fg.muted"
-                dangerouslySetInnerHTML={{ __html: event.descriptionHTML }}
-              ></Text>
-              <Link href="#inner-link" variant="underline" colorPalette="teal">
-                RSVP with 6 others
-              </Link>
-            </LinkBox>
+          {events.map((event) => (
+            <EventCard key={event.id} event={event} />
           ))}
         </Stack>
       </section>
@@ -187,6 +296,8 @@ function App() {
         .finally(() => {
           setIsAttendeeLoading(false);
         });
+    } else {
+      setIsAttendeeLoading(false);
     }
   }, []);
 
