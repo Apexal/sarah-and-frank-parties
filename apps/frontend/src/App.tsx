@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Provider } from "@/components/ui/provider";
 import { Button } from "./components/ui/button";
 import {
+  Badge,
   Center,
   Container,
-  Fieldset,
+  DialogCloseTrigger,
   Heading,
   HStack,
   Input,
@@ -15,15 +16,20 @@ import {
   Spinner,
   Stack,
   Text,
+  Textarea,
 } from "@chakra-ui/react";
+import { DataListItem, DataListRoot } from "@/components/ui/data-list";
+
 import {
   DialogBody,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogRoot,
   DialogTitle,
+  DialogTrigger,
 } from "./components/ui/dialog";
-import { format } from "date-fns";
+import { format, formatDistanceToNowStrict } from "date-fns";
 import {
   collection,
   doc,
@@ -35,6 +41,7 @@ import {
 import { db } from "./services/firebase";
 import { Field } from "./components/ui/field";
 import { InputGroup } from "./components/ui/input-group";
+import { Avatar } from "./components/ui/avatar";
 
 type Attendee = {
   id: string;
@@ -80,7 +87,7 @@ async function getAttendeesForEvent(eventId: string) {
   return query.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Attendee));
 }
 
-function EventCard({ event }: { event: Event }) {
+function EventCard({ event, onClick }: { event: Event; onClick: () => void }) {
   const [attendees, setAttendees] = useState<Attendee[]>([]);
 
   useEffect(() => {
@@ -111,14 +118,30 @@ function EventCard({ event }: { event: Event }) {
         </time>
       </Span>
       <Heading size="lg" my="2">
-        <LinkOverlay href="#">{event.name}</LinkOverlay>
+        <LinkOverlay
+          href={`?event=${event.id}`}
+          onClick={(ev) => {
+            ev.preventDefault();
+            onClick();
+          }}
+        >
+          {event.name}
+        </LinkOverlay>
       </Heading>
       <Text
         mb="3"
         color="fg.muted"
         dangerouslySetInnerHTML={{ __html: event.descriptionHTML }}
       ></Text>
-      <Link href="#inner-link" variant="underline" colorPalette="teal">
+      <Link
+        href={`?event=${event.id}`}
+        variant="underline"
+        colorPalette="teal"
+        onClick={(ev) => {
+          ev.preventDefault();
+          onClick();
+        }}
+      >
         RSVP{attendees.length > 0 && `with ${attendees.length} others`}
       </Link>
     </LinkBox>
@@ -146,6 +169,8 @@ function UnknownAttendeeView() {
 
 function AttendeeView({ attendee }: { attendee: Attendee }) {
   const [events, setEvents] = useState<Event[]>([]);
+  const [activeEventId, setActiveEventId] = useState<string | null>(null);
+  const [isEditingPersonalInfo, setIsEditingPersonalInfo] = useState(false);
   const handlePersonalInfoChangeTimeoutRef = useRef<number | null>(null);
 
   const [personalInfoState, setPersonalInfoState] = useState<
@@ -167,6 +192,12 @@ function AttendeeView({ attendee }: { attendee: Attendee }) {
       );
       setEvents(events);
     });
+
+    // Fetch active event from url params
+    const urlSearchParams = new URLSearchParams(window.location.search);
+    if (urlSearchParams.has("event")) {
+      setActiveEventId(urlSearchParams.get("event"));
+    }
   }, []);
 
   const handlePersonalInfoChange = useCallback(async () => {
@@ -214,58 +245,129 @@ function AttendeeView({ attendee }: { attendee: Attendee }) {
     window.location.reload();
   }
 
+  const activeEvent = events.find((event) => event.id === activeEventId);
+
   return (
     <Container maxWidth="breakpoint-md">
       <Heading size="6xl">Sarah and Frank's Parties</Heading>
-
-      <HStack padding="4" backgroundColor="bg.panel" borderRadius="lg">
-        <Field label="Name" helperText="In case we got it wrong" flex="1">
-          <InputGroup
-            flex="1"
-            endElement={
-              personalInfoState === "waiting" ? <Spinner size="sm" /> : null
-            }
-          >
-            <Input
-              autoComplete="name"
-              defaultValue={attendee.name}
-              onChange={(ev) => setName(ev.currentTarget.value.trim())}
-            />
-          </InputGroup>
-        </Field>
-        <Field
-          label="Phone Number"
-          helperText="So we can send you spam texts"
-          flex="1"
+      <Heading size="lg">
+        Welcome, {attendee.name} ({attendee.phoneNumber})!{" "}
+        <Button
+          variant="ghost"
+          onClick={() => setIsEditingPersonalInfo((prev) => !prev)}
         >
-          <InputGroup
-            flex="1"
-            endElement={
-              personalInfoState === "waiting" ? <Spinner size="sm" /> : null
-            }
-          >
-            <Input
-              autoComplete="tel"
-              type="tel"
-              defaultValue={attendee.phoneNumber}
-              onChange={(ev) => setPhoneNumber(ev.currentTarget.value.trim())}
-            />
-          </InputGroup>
-        </Field>
+          Edit
+        </Button>
         <Button variant="subtle" onClick={handleClearAttendee}>
           I'm not {attendee.name}
         </Button>
-      </HStack>
+      </Heading>
+      {isEditingPersonalInfo && (
+        <HStack padding="4" backgroundColor="bg.panel" borderRadius="lg">
+          <Field label="Name" helperText="In case we got it wrong" flex="1">
+            <InputGroup
+              flex="1"
+              endElement={
+                personalInfoState === "waiting" ? <Spinner size="sm" /> : null
+              }
+            >
+              <Input
+                autoComplete="name"
+                defaultValue={attendee.name}
+                onChange={(ev) => setName(ev.currentTarget.value.trim())}
+              />
+            </InputGroup>
+          </Field>
+          <Field
+            label="Phone Number"
+            helperText="So we can send you spam texts"
+            flex="1"
+          >
+            <InputGroup
+              flex="1"
+              endElement={
+                personalInfoState === "waiting" ? <Spinner size="sm" /> : null
+              }
+            >
+              <Input
+                autoComplete="tel"
+                type="tel"
+                defaultValue={attendee.phoneNumber}
+                onChange={(ev) => setPhoneNumber(ev.currentTarget.value.trim())}
+              />
+            </InputGroup>
+          </Field>
+        </HStack>
+      )}
 
       <section>
         <Heading size="xl">Upcoming Events</Heading>
 
         <Stack>
           {events.map((event) => (
-            <EventCard key={event.id} event={event} />
+            <EventCard
+              key={event.id}
+              event={event}
+              onClick={() => {
+                setActiveEventId(event.id);
+              }}
+            />
           ))}
         </Stack>
       </section>
+
+      {activeEvent && (
+        <DialogRoot open onExitComplete={() => setActiveEventId(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{activeEvent.name}</DialogTitle>
+            </DialogHeader>
+            <DialogBody pb="8">
+              <DataListRoot orientation="horizontal">
+                <DataListItem
+                  label="Status"
+                  value={<Badge colorPalette="green">Completed</Badge>}
+                />
+                <DataListItem
+                  label="Starts"
+                  value={`${format(
+                    activeEvent.startsAt.toDate(),
+                    "EEEE, MMM do 'at' h:mma"
+                  )} (${formatDistanceToNowStrict(
+                    activeEvent.startsAt.toDate(),
+                    {
+                      addSuffix: true,
+                    }
+                  )})`}
+                />
+                <DataListItem
+                  label="RSVP by"
+                  value={`${format(
+                    activeEvent.rsvpBy.toDate(),
+                    "EEEE, MMM do 'at' h:mma"
+                  )} (${formatDistanceToNowStrict(
+                    activeEvent.rsvpBy.toDate(),
+                    {
+                      addSuffix: true,
+                    }
+                  )})`}
+                />
+              </DataListRoot>
+
+              <Textarea placeholder="Add a note" mt="8" minHeight={"10"}/>
+            </DialogBody>
+            <DialogFooter>
+              <Button variant="surface" colorPalette="purple">
+                Save RSVP
+              </Button>
+              <Button variant="ghost" colorPalette="red" onClick={() => setActiveEventId(null)}>
+                Close
+              </Button>
+            </DialogFooter>
+            <DialogCloseTrigger />
+          </DialogContent>
+        </DialogRoot>
+      )}
     </Container>
   );
 }
@@ -289,6 +391,15 @@ function App() {
         .then((attendee) => {
           setAttendee(attendee);
           localStorage.setItem("code", code);
+          const urlSearchParams = new URLSearchParams(window.location.search);
+          // Remove code from url
+          urlSearchParams.delete("code");
+
+          window.history.pushState(
+            {},
+            document.title,
+            `${window.location.pathname}?${urlSearchParams.toString()}`
+          );
         })
         .catch((error) => {
           console.error(error);
