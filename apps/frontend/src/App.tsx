@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Provider } from "@/components/ui/provider";
 import { Button } from "./components/ui/button";
 import {
@@ -27,21 +27,20 @@ import {
   DialogHeader,
   DialogRoot,
   DialogTitle,
-  DialogTrigger,
 } from "./components/ui/dialog";
 import { format, formatDistanceToNowStrict } from "date-fns";
 import {
   collection,
   doc,
-  getDoc,
-  getDocs,
   updateDoc,
   type Timestamp,
-} from "firebase/firestore/lite";
-import { db } from "./services/firebase";
+  query,
+  where,
+} from "firebase/firestore";
+import { db, useDoc, useDocs } from "./services/firebase";
 import { Field } from "./components/ui/field";
 import { InputGroup } from "./components/ui/input-group";
-import { Avatar } from "./components/ui/avatar";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 
 type Attendee = {
   id: string;
@@ -52,6 +51,7 @@ type Attendee = {
 type Event = {
   id: string;
   name: string;
+  type: "cocktail" | "dinner" | "lan";
   startsAt: Timestamp;
   endsAt: Timestamp;
   rsvpBy: Timestamp;
@@ -59,49 +59,11 @@ type Event = {
   descriptionHTML: string;
 };
 
-async function getAttendeeFromCode(code: string): Promise<Attendee> {
-  // Decode code as base64
-  const id = atob(code);
-
-  const attendeeCollection = collection(db, "attendees");
-  // Get attendee from Firestore
-  const attendeeDoc = await getDoc(doc(attendeeCollection, id));
-  if (!attendeeDoc.exists()) {
-    throw new Error("Attendee not found");
-  }
-  const attendee = attendeeDoc.data();
-
-  if (!attendee) {
-    throw new Error("Attendee not found");
-  }
-
-  return {
-    id: attendeeDoc.id,
-    name: attendee.name,
-    phoneNumber: attendee.phoneNumber,
-  };
-}
-
-async function getAttendeesForEvent(eventId: string) {
-  const query = await getDocs(collection(db, "events", eventId, "attendees"));
-  return query.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Attendee));
-}
-
 function EventCard({ event, onClick }: { event: Event; onClick: () => void }) {
-  const [attendees, setAttendees] = useState<Attendee[]>([]);
-
-  useEffect(() => {
-    // Fetch attendee count for event on firestore sub collection
-    getAttendeesForEvent(event.id)
-      .then((attendees) => {
-        console.log(attendees);
-
-        setAttendees(attendees);
-      })
-      .catch((error) => {
-        console.error(error);
-      });
-  }, [event]);
+  const [attendees, isAttendeesLoading] = useDocs<Attendee>(
+    collection(db, "events", event.id, "attendees"),
+    true
+  )
 
   return (
     <LinkBox
@@ -168,7 +130,9 @@ function UnknownAttendeeView() {
 }
 
 function AttendeeView({ attendee }: { attendee: Attendee }) {
-  const [events, setEvents] = useState<Event[]>([]);
+  const [eventType, setEventType] = useState<"all" | "cocktail" | "dinner" | "lan">("all");
+  const memoizedQuery = useMemo(() => query(collection(db, "events"), where("type", "==", eventType)), [eventType]);
+  const [events, isEventsLoading] = useDocs<Event>(memoizedQuery, true);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
   const [isEditingPersonalInfo, setIsEditingPersonalInfo] = useState(false);
   const handlePersonalInfoChangeTimeoutRef = useRef<number | null>(null);
@@ -180,19 +144,6 @@ function AttendeeView({ attendee }: { attendee: Attendee }) {
   const [phoneNumber, setPhoneNumber] = useState(attendee.phoneNumber);
 
   useEffect(() => {
-    // Fetch events from firestore
-    const eventsCollection = collection(db, "events");
-    getDocs(eventsCollection).then((querySnapshot) => {
-      const events = querySnapshot.docs.map(
-        (doc) =>
-          ({
-            id: doc.id,
-            ...doc.data(),
-          } as Event)
-      );
-      setEvents(events);
-    });
-
     // Fetch active event from url params
     const urlSearchParams = new URLSearchParams(window.location.search);
     if (urlSearchParams.has("event")) {
@@ -302,6 +253,29 @@ function AttendeeView({ attendee }: { attendee: Attendee }) {
 
       <section>
         <Heading size="xl">Upcoming Events</Heading>
+        <SegmentedControl
+          defaultValue="all"
+          name="eventType"
+          onValueChange={({ value }) => setEventType(value as Event["type"])}
+          items={[
+            {
+              label: "All",
+              value: "all",
+            },
+            {
+              label: "Cocktail Parties",
+              value: "cocktail",
+            },
+            {
+              label: "Dinner Parties",
+              value: "dinner",
+            },
+            {
+              label: "LAN Parties",
+              value: "lan",
+            },
+          ]}
+        />
 
         <Stack>
           {events.map((event) => (
@@ -345,22 +319,23 @@ function AttendeeView({ attendee }: { attendee: Attendee }) {
                   value={`${format(
                     activeEvent.rsvpBy.toDate(),
                     "EEEE, MMM do 'at' h:mma"
-                  )} (${formatDistanceToNowStrict(
-                    activeEvent.rsvpBy.toDate(),
-                    {
-                      addSuffix: true,
-                    }
-                  )})`}
+                  )} (${formatDistanceToNowStrict(activeEvent.rsvpBy.toDate(), {
+                    addSuffix: true,
+                  })})`}
                 />
               </DataListRoot>
 
-              <Textarea placeholder="Add a note" mt="8" minHeight={"10"}/>
+              <Textarea placeholder="Add a note" mt="8" minHeight={"10"} />
             </DialogBody>
             <DialogFooter>
               <Button variant="surface" colorPalette="purple">
                 Save RSVP
               </Button>
-              <Button variant="ghost" colorPalette="red" onClick={() => setActiveEventId(null)}>
+              <Button
+                variant="ghost"
+                colorPalette="red"
+                onClick={() => setActiveEventId(null)}
+              >
                 Close
               </Button>
             </DialogFooter>
@@ -372,45 +347,30 @@ function AttendeeView({ attendee }: { attendee: Attendee }) {
   );
 }
 
+/** Gets attendee ID either from url search params or localstorage. */
+function getAttendeeId() {
+  const urlSearchParams = new URLSearchParams(window.location.search);
+  if (urlSearchParams.has("code")) {
+    const code = urlSearchParams.get("code") as string;
+    localStorage.setItem("attendeeId", atob(code));
+    return atob(code);
+  }
+
+  return localStorage.getItem("attendeeId");
+}
+
 function App() {
-  const [isAttendeeLoading, setIsAttendeeLoading] = useState(true);
-  const [attendee, setAttendee] = useState<Attendee | null>(null);
+  const attendeeId = getAttendeeId();
+  const [attendee, isAttendeeLoading, attendeeError] = useDoc<Attendee>(
+    doc(db, "attendees", attendeeId as string),
+    !!attendeeId
+  );
 
   useEffect(() => {
-    // Check for user name and phone number in query or local storage
-    const urlSearchParams = new URLSearchParams(window.location.search);
-    let code: string | null = null;
-    if (urlSearchParams.has("code")) {
-      code = urlSearchParams.get("code");
-    } else {
-      code = localStorage.getItem("code");
+    if (attendeeError) {
+      console.error(attendeeError);
     }
-
-    if (code) {
-      getAttendeeFromCode(code)
-        .then((attendee) => {
-          setAttendee(attendee);
-          localStorage.setItem("code", code);
-          const urlSearchParams = new URLSearchParams(window.location.search);
-          // Remove code from url
-          urlSearchParams.delete("code");
-
-          window.history.pushState(
-            {},
-            document.title,
-            `${window.location.pathname}?${urlSearchParams.toString()}`
-          );
-        })
-        .catch((error) => {
-          console.error(error);
-        })
-        .finally(() => {
-          setIsAttendeeLoading(false);
-        });
-    } else {
-      setIsAttendeeLoading(false);
-    }
-  }, []);
+  });
 
   return (
     <Provider>
