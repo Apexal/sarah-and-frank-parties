@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Provider } from "@/components/ui/provider";
 import { Button } from "./components/ui/button";
 import {
@@ -33,37 +33,88 @@ import {
   collection,
   doc,
   updateDoc,
-  type Timestamp,
   query,
   where,
+  onSnapshot,
+  setDoc,
+  getDoc,
+  deleteDoc,
 } from "firebase/firestore";
-import { db, useDoc, useDocs } from "./services/firebase";
+import {
+  type AttendeeDoc,
+  db,
+  type EventDoc,
+} from "./services/firebase";
 import { Field } from "./components/ui/field";
 import { InputGroup } from "./components/ui/input-group";
 import { SegmentedControl } from "@/components/ui/segmented-control";
+import { EmptyState } from "./components/ui/empty-state";
+import { Prose } from "./components/ui/prose";
 
-type Attendee = {
-  id: string;
-  name: string;
-  phoneNumber: string;
-};
+type EventType = {
+  label: string;
+  value: EventDoc["type"] | "all";
+  description?: string;
+}
+const eventTypes: EventType[] = [
+  {
+    label: "All",
+    value: "all",
+    description: "All the parties. Wh"
+  },
+  {
+    label: "🍸 Cocktail Parties",
+    value: "cocktail",
+    description: "The OG party. Join us for a night of drinks, snacks, and mingling. Meet new people and catch up with old friends.",
+  },
+  {
+    label: "🍽️ Dinner Parties",
+    value: "dinner",
+    description: "Join us for longer, sit-down meals with a variety of cuisines and themes. Meet new people and enjoy a night of great food and conversation."
+  },
+  {
+    label: "🎮 LAN Parties",
+    value: "lan",
+    description: "Bring your laptop (or desktop if you're a true gamer) and join us for video games ranging from casual to competitive."
+  },
+  {
+    label: "🎲 Game Nights",
+    value: "game",
+    description: "Board games, card games, and party games. We are building a collection and are always looking for new players."
+  },
+  {
+    label: "🍿 Movie Nights",
+    value: "movie",
+    description: "Grab some popcorn and squish in on our couch to watch a movie together. I paid too much for this stupid QLED TV not to use it."
+  }
+] as const;
 
-type Event = {
-  id: string;
-  name: string;
-  type: "cocktail" | "dinner" | "lan";
-  startsAt: Timestamp;
-  endsAt: Timestamp;
-  rsvpBy: Timestamp;
-  address: string;
-  descriptionHTML: string;
-};
+function EventCard({
+  event,
+  onClick,
+}: {
+  event: EventDoc;
+  onClick: (eventId: string) => void;
+}) {
+  const [attendees, setAttendees] = useState<AttendeeDoc[]>([]);
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, "events", event.id, "attendees"),
+      (querySnapshot) => {
+        const attendees = querySnapshot.docs.map(
+          (doc) =>
+            ({
+              id: doc.id,
+              ...doc.data(),
+            } as AttendeeDoc)
+        );
 
-function EventCard({ event, onClick }: { event: Event; onClick: () => void }) {
-  const [attendees, isAttendeesLoading] = useDocs<Attendee>(
-    collection(db, "events", event.id, "attendees"),
-    true
-  )
+        setAttendees(attendees);
+      }
+    );
+
+    return unsubscribe;
+  }, [event.id]);
 
   return (
     <LinkBox
@@ -84,24 +135,26 @@ function EventCard({ event, onClick }: { event: Event; onClick: () => void }) {
           href={`?event=${event.id}`}
           onClick={(ev) => {
             ev.preventDefault();
-            onClick();
+            onClick(event.id);
           }}
         >
           {event.name}
         </LinkOverlay>
       </Heading>
-      <Text
-        mb="3"
-        color="fg.muted"
+      <Prose>
+      <div
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: <explanation>
         dangerouslySetInnerHTML={{ __html: event.descriptionHTML }}
-      ></Text>
+      />
+      </Prose>
+      
       <Link
         href={`?event=${event.id}`}
         variant="underline"
         colorPalette="teal"
         onClick={(ev) => {
           ev.preventDefault();
-          onClick();
+          onClick(event.id);
         }}
       >
         RSVP{attendees.length > 0 && `with ${attendees.length} others`}
@@ -129,11 +182,29 @@ function UnknownAttendeeView() {
   );
 }
 
-function AttendeeView({ attendee }: { attendee: Attendee }) {
-  const [eventType, setEventType] = useState<"all" | "cocktail" | "dinner" | "lan">("all");
-  const memoizedQuery = useMemo(() => query(collection(db, "events"), where("type", "==", eventType)), [eventType]);
-  const [events, isEventsLoading] = useDocs<Event>(memoizedQuery, true);
-  const [activeEventId, setActiveEventId] = useState<string | null>(null);
+function streamEvents(
+  eventType: "all" | "cocktail" | "dinner" | "lan",
+  callback: (events: EventDoc[]) => void
+) {
+  const q =
+    eventType === "all"
+      ? collection(db, "events")
+      : query(collection(db, "events"), where("type", "==", eventType));
+
+  return onSnapshot(q, (querySnapshot) => {
+    const events = querySnapshot.docs.map(
+      (doc) =>
+        ({
+          id: doc.id,
+          ...doc.data(),
+        } as EventDoc)
+    );
+
+    callback(events);
+  });
+}
+
+function AttendeeContactInfo({ attendee }: { attendee: AttendeeDoc }) {
   const [isEditingPersonalInfo, setIsEditingPersonalInfo] = useState(false);
   const handlePersonalInfoChangeTimeoutRef = useRef<number | null>(null);
 
@@ -143,13 +214,11 @@ function AttendeeView({ attendee }: { attendee: Attendee }) {
   const [name, setName] = useState(attendee.name);
   const [phoneNumber, setPhoneNumber] = useState(attendee.phoneNumber);
 
-  useEffect(() => {
-    // Fetch active event from url params
-    const urlSearchParams = new URLSearchParams(window.location.search);
-    if (urlSearchParams.has("event")) {
-      setActiveEventId(urlSearchParams.get("event"));
-    }
-  }, []);
+  function handleClearAttendee() {
+    localStorage.removeItem("attendeeId");
+    window.history.pushState({}, document.title, window.location.pathname);
+    window.location.reload();
+  }
 
   const handlePersonalInfoChange = useCallback(async () => {
     // Update attendee name and phone number in firestore
@@ -190,17 +259,8 @@ function AttendeeView({ attendee }: { attendee: Attendee }) {
     phoneNumber,
   ]);
 
-  function handleClearAttendee() {
-    localStorage.removeItem("code");
-    window.history.pushState({}, document.title, window.location.pathname);
-    window.location.reload();
-  }
-
-  const activeEvent = events.find((event) => event.id === activeEventId);
-
   return (
-    <Container maxWidth="breakpoint-md">
-      <Heading size="6xl">Sarah and Frank's Parties</Heading>
+    <>
       <Heading size="lg">
         Welcome, {attendee.name} ({attendee.phoneNumber})!{" "}
         <Button
@@ -250,43 +310,92 @@ function AttendeeView({ attendee }: { attendee: Attendee }) {
           </Field>
         </HStack>
       )}
+    </>
+  );
+}
 
+function AttendeeEventsView({ attendee }: { attendee: AttendeeDoc }) {
+  const [eventType, setEventType] = useState<
+    "all" | "cocktail" | "dinner" | "lan"
+  >("all");
+
+  const [events, setEvents] = useState<EventDoc[]>([]);
+  const [activeEventId, setActiveEventId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = streamEvents(eventType, setEvents);
+    return unsubscribe;
+  }, [eventType]);
+
+  useEffect(() => {
+    // Fetch active event from url params
+    const urlSearchParams = new URLSearchParams(window.location.search);
+    if (urlSearchParams.has("event")) {
+      setActiveEventId(urlSearchParams.get("event"));
+    }
+  }, []);
+
+  async function handleRSVPToggle() {
+    if (!activeEventId) {
+      return;
+    }
+
+    const eventAttendeeDoc = await getDoc(
+      doc(db, "events", activeEventId, "attendees", attendee.id)
+    );
+    if (eventAttendeeDoc.exists()) {
+      await deleteDoc(eventAttendeeDoc.ref);
+    } else {
+      await setDoc(eventAttendeeDoc.ref, {
+        attendee: doc(db, "attendees", attendee.id),
+      });
+    }
+  }
+
+  const activeEvent = events.find((event) => event.id === activeEventId);
+
+  const [isRsvpedForActiveEvent, setIsRsvpedForActiveEvent] = useState(false);
+  useEffect(() => {
+    if (!activeEventId) {
+      return;
+    }
+
+    const docRef = doc(db, "events", activeEventId, "attendees", attendee.id);
+    const unsubscribe = onSnapshot(docRef, (doc) => {
+      setIsRsvpedForActiveEvent(doc.exists());
+    });
+    return unsubscribe;
+  }, [activeEventId, attendee.id]);
+
+  const eventTypeDescripion = eventTypes.find(
+    (et) => et.value === eventType
+  )?.description;
+
+  return (
+    <>
       <section>
         <Heading size="xl">Upcoming Events</Heading>
         <SegmentedControl
           defaultValue="all"
           name="eventType"
-          onValueChange={({ value }) => setEventType(value as Event["type"])}
-          items={[
-            {
-              label: "All",
-              value: "all",
-            },
-            {
-              label: "Cocktail Parties",
-              value: "cocktail",
-            },
-            {
-              label: "Dinner Parties",
-              value: "dinner",
-            },
-            {
-              label: "LAN Parties",
-              value: "lan",
-            },
-          ]}
+          onValueChange={({ value }) => setEventType(value as EventDoc["type"])}
+          items={eventTypes}
         />
+        {eventTypeDescripion && (
+          <Text color="fg.muted" mb="4">
+            {eventTypeDescripion}
+          </Text>
+        )}
 
         <Stack>
           {events.map((event) => (
             <EventCard
               key={event.id}
               event={event}
-              onClick={() => {
-                setActiveEventId(event.id);
-              }}
+              onClick={setActiveEventId}
             />
           ))}
+          {events.length === 0 && <EmptyState title="No Events Found" />}
         </Stack>
       </section>
 
@@ -328,8 +437,12 @@ function AttendeeView({ attendee }: { attendee: Attendee }) {
               <Textarea placeholder="Add a note" mt="8" minHeight={"10"} />
             </DialogBody>
             <DialogFooter>
-              <Button variant="surface" colorPalette="purple">
-                Save RSVP
+              <Button
+                variant="surface"
+                colorPalette="purple"
+                onClick={handleRSVPToggle}
+              >
+                {isRsvpedForActiveEvent ? "Un-RSVP" : "RSVP"}
               </Button>
               <Button
                 variant="ghost"
@@ -343,6 +456,16 @@ function AttendeeView({ attendee }: { attendee: Attendee }) {
           </DialogContent>
         </DialogRoot>
       )}
+    </>
+  );
+}
+
+function AttendeeView({ attendee }: { attendee: AttendeeDoc }) {
+  return (
+    <Container maxWidth="breakpoint-md">
+      <Heading size="6xl">Sarah and Frank's Parties</Heading>
+      <AttendeeContactInfo attendee={attendee} />
+      <AttendeeEventsView attendee={attendee} />
     </Container>
   );
 }
@@ -360,17 +483,29 @@ function getAttendeeId() {
 }
 
 function App() {
-  const attendeeId = getAttendeeId();
-  const [attendee, isAttendeeLoading, attendeeError] = useDoc<Attendee>(
-    doc(db, "attendees", attendeeId as string),
-    !!attendeeId
-  );
+  const [attendee, setAttendee] = useState<AttendeeDoc | null>(null);
+  const [isAttendeeLoading, setIsAttendeeLoading] = useState(true);
 
   useEffect(() => {
-    if (attendeeError) {
-      console.error(attendeeError);
+    const attendeeId = getAttendeeId();
+    if (!attendeeId) {
+      setIsAttendeeLoading(false);
+      return;
     }
-  });
+
+    const unsubscribe = onSnapshot(doc(db, "attendees", attendeeId), (doc) => {
+      if (doc.exists()) {
+        setAttendee({
+          id: doc.id,
+          ...doc.data(),
+        } as AttendeeDoc);
+      } else {
+        setAttendee(null);
+      }
+      setIsAttendeeLoading(false);
+    });
+    return unsubscribe;
+  }, []);
 
   return (
     <Provider>
