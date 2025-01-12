@@ -40,11 +40,7 @@ import {
   getDoc,
   deleteDoc,
 } from "firebase/firestore";
-import {
-  type AttendeeDoc,
-  db,
-  type EventDoc,
-} from "./services/firebase";
+import { type AttendeeDoc, db, type EventDoc } from "./services/firebase";
 import { Field } from "./components/ui/field";
 import { InputGroup } from "./components/ui/input-group";
 import { SegmentedControl } from "@/components/ui/segmented-control";
@@ -55,38 +51,43 @@ type EventType = {
   label: string;
   value: EventDoc["type"] | "all";
   description?: string;
-}
+};
 const eventTypes: EventType[] = [
   {
     label: "All",
     value: "all",
-    description: "All the parties. Wh"
+    description: "All the parties. Wh",
   },
   {
     label: "🍸 Cocktail Parties",
     value: "cocktail",
-    description: "The OG party. Join us for a night of drinks, snacks, and mingling. Meet new people and catch up with old friends.",
+    description:
+      "The OG party. Join us for a night of drinks, snacks, and mingling. Meet new people and catch up with old friends.",
   },
   {
     label: "🍽️ Dinner Parties",
     value: "dinner",
-    description: "Join us for longer, sit-down meals with a variety of cuisines and themes. Meet new people and enjoy a night of great food and conversation."
+    description:
+      "Join us for longer, sit-down meals with a variety of cuisines and themes. Meet new people and enjoy a night of great food and conversation.",
   },
   {
     label: "🎮 LAN Parties",
     value: "lan",
-    description: "Bring your laptop (or desktop if you're a true gamer) and join us for video games ranging from casual to competitive."
+    description:
+      "Bring your laptop (or desktop if you're a true gamer) and join us for video games ranging from casual to competitive.",
   },
   {
     label: "🎲 Game Nights",
     value: "game",
-    description: "Board games, card games, and party games. We are building a collection and are always looking for new players."
+    description:
+      "Board games, card games, and party games. We are building a collection and are always looking for new players.",
   },
   {
     label: "🍿 Movie Nights",
     value: "movie",
-    description: "Grab some popcorn and squish in on our couch to watch a movie together. I paid too much for this stupid QLED TV not to use it."
-  }
+    description:
+      "Grab some popcorn and squish in on our couch to watch a movie together. I paid too much for this stupid QLED TV not to use it.",
+  },
 ] as const;
 
 function EventCard({
@@ -142,12 +143,12 @@ function EventCard({
         </LinkOverlay>
       </Heading>
       <Prose>
-      <div
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: <explanation>
-        dangerouslySetInnerHTML={{ __html: event.descriptionHTML }}
-      />
+        <div
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: <explanation>
+          dangerouslySetInnerHTML={{ __html: event.descriptionHTML }}
+        />
       </Prose>
-      
+
       <Link
         href={`?event=${event.id}`}
         variant="underline"
@@ -183,7 +184,7 @@ function UnknownAttendeeView() {
 }
 
 function streamEvents(
-  eventType: "all" | "cocktail" | "dinner" | "lan",
+  eventType: EventDoc["type"] | "all",
   callback: (events: EventDoc[]) => void
 ) {
   const q =
@@ -316,7 +317,7 @@ function AttendeeContactInfo({ attendee }: { attendee: AttendeeDoc }) {
 
 function AttendeeEventsView({ attendee }: { attendee: AttendeeDoc }) {
   const [eventType, setEventType] = useState<
-    "all" | "cocktail" | "dinner" | "lan"
+   EventDoc["type"] | "all"
   >("all");
 
   const [events, setEvents] = useState<EventDoc[]>([]);
